@@ -62,6 +62,8 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
+patience = 10
+patience_counter = 0
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
@@ -71,7 +73,7 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-compile = True # use PyTorch 2.0 to compile the model to be faster
+compile = False # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -271,19 +273,25 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             })
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        if losses['val'] < best_val_loss:
             best_val_loss = losses['val']
-            if iter_num > 0:
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'model_args': model_args,
-                    'iter_num': iter_num,
-                    'best_val_loss': best_val_loss,
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+            patience_counter = 0
+            checkpoint = {
+                'model': raw_model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'model_args': model_args,
+                'iter_num': iter_num,
+                'best_val_loss': best_val_loss,
+                'config': config,
+            }
+            print(f"saving checkpoint to {out_dir}")
+            torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+        else:
+            patience_counter += 1
+            print(f'No improvement in val_loss. Patience {patience_counter}/{patience}')
+        if patience_counter >= patience:
+            print('EARLY STOPPING triggered. Stopping train to avoid overfitting')
+            break
     if iter_num == 0 and eval_only:
         break
 

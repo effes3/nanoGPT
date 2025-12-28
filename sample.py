@@ -7,6 +7,8 @@ from contextlib import nullcontext
 import torch
 import tiktoken
 from model import GPTConfig, GPT
+import codecs
+from SmilesPE.tokenizer import SPE_Tokenizer
 
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
@@ -54,24 +56,53 @@ if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
 # look for the meta pickle in case it is available in the dataset folder
+# look for the meta pickle
 load_meta = False
-if init_from == 'resume' and 'config' in checkpoint and 'dataset' in checkpoint['config']: # older checkpoints might not have these...
+# Проверяем наличие meta.pkl в папке с данными
+if init_from == 'resume':
+    # Пытаемся найти meta.pkl там, где он обычно лежит
     meta_path = os.path.join('data', checkpoint['config']['dataset'], 'meta.pkl')
+    if not os.path.exists(meta_path):
+        # Если не нашли, попробуем поискать в out_dir (иногда он там)
+        meta_path = os.path.join(out_dir, 'meta.pkl')
     load_meta = os.path.exists(meta_path)
+
 if load_meta:
     print(f"Loading meta from {meta_path}...")
     with open(meta_path, 'rb') as f:
         meta = pickle.load(f)
-    # TODO want to make this more general to arbitrary encoder/decoder schemes
     stoi, itos = meta['stoi'], meta['itos']
-    encode = lambda s: [stoi[c] for c in s]
-    decode = lambda l: ''.join([itos[i] for i in l])
+    
+    # Твоя новая логика с SPE
+    spe_vob = codecs.open('/home/semakin_grisha/nanoGPT/data/chemical_transforms/custom_tokenize_spe.txt') 
+    spe = SPE_Tokenizer(spe_vob)
+
+    def encode(s):
+        s = s.replace('^', '').replace(';', '')
+
+        tokens = []
+        tokens.append('^')
+        if '>>' in s:
+            parts = s.split('>>')
+            tokens.extend(spe.tokenize(parts[0]).split())
+            tokens.append('>>')
+            if len(parts) > 1 and parts[1]:
+                tokens.extend(spe.tokenize(parts[1]).split())
+        else:
+            tokens.extend(spe.tokenize(s).split())
+            tokens.append('>>')
+
+        return [stoi.get(t, stoi['<unk>']) for t in tokens]
+    
+    def decode(l):
+        return ''.join([itos.get(i, '<unk>') for i in l])
 else:
-    # ok let's assume gpt-2 encodings by default
-    print("No meta.pkl found, assuming GPT-2 encodings...")
+    # Если meta.pkl не найден, всё равно определяем функции, чтобы не было ошибки
+    print("No meta.pkl found! Check your paths.")
+    import tiktoken
     enc = tiktoken.get_encoding("gpt2")
-    encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
-    decode = lambda l: enc.decode(l)
+    def encode(s): return enc.encode(s, allowed_special={"<|endoftext|>"})
+    def decode(l): return enc.decode(l)
 
 # encode the beginning of the prompt
 if start.startswith('FILE:'):
@@ -85,5 +116,7 @@ with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            print(decode(y[0].tolist()))
-            print('---------------')
+            raw_output = decode(y[0].tolist())
+            clean_output = raw_output.split(';')[0] + ';'
+            print(clean_output)
+            print('--------------------------------------------------')
